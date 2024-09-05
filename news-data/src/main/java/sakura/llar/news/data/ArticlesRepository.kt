@@ -3,50 +3,70 @@ package sakura.llar.news.data
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onEach
 import sakura.llar.news.data.model.Article
 import sakura.llar.news.database.NewsDatabase
+import sakura.llar.news.database.models.ArticleDBO
 import sakura.llar.newsapi.NewsApi
 import sakura.llar.newsapi.models.ArticleDTO
 import sakura.llar.newsapi.models.ResponseDTO
-import java.io.IOException
 
 class ArticlesRepository(
     private val database: NewsDatabase,
-    private val api: NewsApi
+    private val api: NewsApi,
+    private val requestResponseMergeStrategy: RequestResponseMergeStrategy<List<Article>>,
 ) {
 
     fun getAll(): Flow<RequestResult<List<Article>>> {
-        val cachedAllArticles: Flow<List<Article>> = database.articlesDao
-            .getAll()
-            .map { articles -> articles.map { it.toArticle() } }
-
-        val remoteArticles = flow {
-            emit(api.everything())
-        }.map { result ->
-            if (result.isSuccess) {
-                val response: ResponseDTO<ArticleDTO> = result.getOrThrow()
-                RequestResult.Success(response.articles)
-            } else {
-                RequestResult.Error(null)
-                throw result.exceptionOrNull() ?: IOException("Unknown error")
+        val cachedAllArticles: Flow<RequestResult<List<Article>>> = getAllFromDatabase()
+            .map { result ->
+                result.map { articlesDbos ->
+                    articlesDbos.map { it.toArticle() }
+                }
             }
-        }.mapNotNull { requestResult ->requestResult as? RequestResult.Success }
-            .map { requestResult ->
-            requestResult.data.map { articlesDto -> articlesDto.toArticleDbo() }
-        }.onEach { articlesDbos ->
-            database.articlesDao.insert(articlesDbos)
+
+        val remoteArticles: Flow<RequestResult<List<Article>>> = getAllFromServer()
+            .map { result: RequestResult<ResponseDTO<ArticleDTO>> ->
+                result.map { response ->
+                    response.articles.map { it.toArticle() }
+                }
+            }
+
+        return cachedAllArticles.combine(remoteArticles) { dbos, dtos ->
+            requestResponseMergeStrategy.merge(dbos, dtos)
         }
+    }
 
-        cachedAllArticles.map {
+    private fun getAllFromServer(): Flow<RequestResult<ResponseDTO<ArticleDTO>>> {
+        val apiRequest = flow { emit(api.everything()) }
+            .onEach { result ->
+                if (result.isSuccess) {
+                    saveNetResponseToCache(checkNotNull(result.getOrThrow()).articles)
+                }
+            }
+            .map { it.toRequestResult() }
 
-        }
+        val start = flowOf<RequestResult<ResponseDTO<ArticleDTO>>>(RequestResult.InProgress())
 
-        return cachedAllArticles.combine(remoteArticles) {
+        return merge(apiRequest, start)
+    }
 
-        }
+    private suspend fun saveNetResponseToCache(data: List<ArticleDTO>) {
+        val dbos = data.map { articleDTO -> articleDTO.toArticleDbo() }
+        database.articlesDao.insert(dbos)
+    }
+
+    private fun getAllFromDatabase(): Flow<RequestResult<List<ArticleDBO>>> {
+        val dbRequest = database.articlesDao
+            .getAll()
+            .map { RequestResult.Success(it) }
+
+        val start = flowOf<RequestResult<List<ArticleDBO>>>(RequestResult.InProgress())
+
+        return merge(start, dbRequest)
     }
 
     suspend fun search(query: String): Flow<Article> {
@@ -54,13 +74,3 @@ class ArticlesRepository(
         TODO("Not implemented")
     }
 }
-
-
-sealed class RequestResult<E>(internal val data: E?) {
-
-    class InProgress<E>(data: E?) : RequestResult<E>(data)
-    class Success<E>(data: E?) : RequestResult<E>(data)
-    class Error<E>(data: E?) : RequestResult<E>(data)
-}
-
-internal fun <T: Any> RequestResult<T?>.requireData(): T = checkNotNull(data)
