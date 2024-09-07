@@ -1,13 +1,22 @@
 package sakura.llar.news.main
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import sakura.llar.news.data.ArticlesRepository
-//import sakura.llar.news.data.RequestResult
-import sakura.llar.news.data.model.Article
+import sakura.llar.news.data.RequestResult
+import sakura.llar.news.data.map
+import sakura.llar.news.data.model.Article as DataArticle
 
 class GetAllArticlesUseCase(private val repository: ArticlesRepository) {
 
-    operator fun invoke(): Flow<Article> {
+    operator fun invoke(): Flow<RequestResult<List<Article>>> {
         return repository.getAll()
+            .map { requestResult ->
+                requestResult.map { articles -> articles.map { it.toUiArticle() } }
+            }
     }
+}
+
+private fun DataArticle.toUiArticle(): Article {
+    TODO("Not yet implemented")
 }
