@@ -9,7 +9,6 @@ import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.create
 import retrofit2.http.GET
-import retrofit2.http.Header
 import retrofit2.http.Query
 import sakura.llar.newsapi.models.ArticleDTO
 import sakura.llar.newsapi.models.Language

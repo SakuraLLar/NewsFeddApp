@@ -1,5 +1,6 @@
 package sakura.llar.news.data
 
+import jakarta.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.combine
@@ -16,7 +17,7 @@ import sakura.llar.newsapi.NewsApi
 import sakura.llar.newsapi.models.ArticleDTO
 import sakura.llar.newsapi.models.ResponseDTO
 
-class ArticlesRepository(
+class ArticlesRepository @Inject constructor(
     private val database: NewsDatabase,
     private val api: NewsApi,
 ) {
@@ -25,18 +26,8 @@ class ArticlesRepository(
         mergeStrategy: MergeStrategy<RequestResult<List<Article>>> = RequestResponseMergeStrategy(),
     ): Flow<RequestResult<List<Article>>> {
         val cachedAllArticles: Flow<RequestResult<List<Article>>> = getAllFromDatabase()
-            .map { result ->
-                result.map { articlesDbos ->
-                    articlesDbos.map { it.toArticle() }
-                }
-            }
 
         val remoteArticles: Flow<RequestResult<List<Article>>> = getAllFromServer()
-            .map { result: RequestResult<ResponseDTO<ArticleDTO>> ->
-                result.map { response ->
-                    response.articles.map { it.toArticle() }
-                }
-            }
 
         return cachedAllArticles.combine(remoteArticles, mergeStrategy::merge)
             .flatMapLatest { result ->
@@ -50,11 +41,11 @@ class ArticlesRepository(
             }
     }
 
-    private fun getAllFromServer(): Flow<RequestResult<ResponseDTO<ArticleDTO>>> {
+    private fun getAllFromServer(): Flow<RequestResult<List<Article>>> {
         val apiRequest = flow { emit(api.everything()) }
             .onEach { result ->
                 if (result.isSuccess) {
-                    saveNetResponseToCache(checkNotNull(result.getOrThrow()).articles)
+                    saveNetResponseToCache(result.getOrThrow().articles)
                 }
             }
             .map { it.toRequestResult() }
@@ -62,6 +53,11 @@ class ArticlesRepository(
         val start = flowOf<RequestResult<ResponseDTO<ArticleDTO>>>(RequestResult.InProgress())
 
         return merge(apiRequest, start)
+            .map { result: RequestResult<ResponseDTO<ArticleDTO>> ->
+                result.map { response ->
+                    response.articles.map { it.toArticle() }
+                }
+            }
     }
 
     private suspend fun saveNetResponseToCache(data: List<ArticleDTO>) {
@@ -69,12 +65,17 @@ class ArticlesRepository(
         database.articlesDao.insert(dbos)
     }
 
-    private fun getAllFromDatabase(): Flow<RequestResult<List<ArticleDBO>>> {
+    private fun getAllFromDatabase(): Flow<RequestResult<List<Article>>> {
         val dbRequest = database.articlesDao::getAll.asFlow()
             .map { RequestResult.Success(it) }
 
         val start = flowOf<RequestResult<List<ArticleDBO>>>(RequestResult.InProgress())
         return merge(start, dbRequest)
+            .map { result ->
+                result.map { articlesDbos ->
+                    articlesDbos.map { it.toArticle() }
+                }
+            }
     }
 
     suspend fun search(query: String): Flow<Article> {
